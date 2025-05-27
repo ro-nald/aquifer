@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for base infrastructure resources (using SSM).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: A name to identify the project.
+  Environment:
+    Type: String
+    Description: The environment (e.g., dev, prod).
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  InstanceType:
+    Type: String
+    Description: EC2 Instance Type
+    Default: t2.micro
+
+Resources:
+  # S3 Bucket for Terraform State
+  TerraformStateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-terraform-state"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # IAM Role for Terraform
+  TerraformRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-terraform-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-${Environment}-terraform-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "arn:aws:s3:::${TerraformStateBucket}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt TerraformStateBucket.Arn
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - s3:*
+                  - iam:*
+                  - rds:*
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - cloudformation:*
+                  - ssm:* # Added SSM permissions
+                  - ssm:Describe*
+                  - ssm:Get*
+                  - ssm:List*
+                  - ssm:StartSession # Added SSM permissions
+                  - ssm:TerminateSession # Added SSM permissions
+                  - ssm:ResumeSession # Added SSM permissions
+                Resource: "*" # Consider narrowing these permissions!
+
+  # EC2 Security Group
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-${Environment}-ec2-sg"
+      GroupDescription: Security group for the Terraform EC2 instance.
+      # Removed inbound SSH rule
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      SecurityGroupIds:
+        - !GetAtt EC2SecurityGroup.GroupId
+      IamInstanceProfile: !GetAtt TerraformRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-terraform-ec2"
+      # UserData:  <-- Optional: Add UserData to install SSM agent if not present
+      #   Fn::Base64: |
+      #     #!/bin/bash
+      #     yum update -y
+      #     yum install -y amazon-ssm-agent
+
+Outputs:
+  S3BucketName:
+    Description: Name of the S3 bucket for Terraform state.
+    Value: !Ref TerraformStateBucket
+  TerraformRoleArn:
+    Description: ARN of the IAM role for Terraform.
+    Value: !GetAtt TerraformRole.Arn
+  EC2InstanceId:
+    Description: ID of the EC2 instance.
+    Value: !Ref EC2Instance
+  EC2SecurityGroupId:
+    Description: ID of the EC2 security group.
+    Value: !Ref EC2SecurityGroup

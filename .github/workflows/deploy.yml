@@ -1,0 +1,84 @@
+name: Deploy CloudFormation Stack (SSM)
+
+on:
+  push:
+    branches:
+      - main  # Or your main branch name
+
+jobs:
+  deploy_base:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]  # Define your environments
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.load_env.outputs.aws_region }}
+
+      - name: Load environment variables
+        id: load_env
+        run: |
+          CONFIG_FILE="config/${{ matrix.environment }}.yml"
+          echo "Loading configuration from $CONFIG_FILE"
+          if [ -f "$CONFIG_FILE" ]; then
+            echo "CONFIG_FILE_EXISTS=true" >> $GITHUB_OUTPUT
+            cat "$CONFIG_FILE" >> $GITHUB_OUTPUT
+            while IFS='=' read -r key value; do
+              echo "$key=$value" >> $GITHUB_OUTPUT
+            done < "$CONFIG_FILE"
+          else
+            echo "CONFIG_FILE_EXISTS=false" >> $GITHUB_OUTPUT
+            echo "Configuration file not found: $CONFIG_FILE"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Deploy CloudFormation stack
+        id: deploy_cfn
+        if: steps.load_env.outputs.CONFIG_FILE_EXISTS == 'true'
+        run: |
+          aws cloudformation deploy \
+            --stack-name acquifier-terraform-backend-${{ matrix.environment }} \
+            --template-file cloudformation/base-infrastructure.yaml \
+            --parameters \
+              ParameterKey=ProjectName,ParameterValue=acquifier \
+              ParameterKey=Environment,ParameterValue=${{ matrix.environment }} \
+              ParameterKey=InstanceType,ParameterValue="${{ steps.load_env.outputs.instance_type }}"
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
+
+        # Export outputs
+        aws cloudformation describe-stacks --stack-name acquifier-terraform-backend-${{ matrix.environment }} --query "Stacks[0].Outputs" --output json > outputs.json
+        echo "::set-output name=stack_outputs::$(cat outputs.json)"
+
+      - name: Execute commands on EC2 instance via SSM
+        if: steps.load_env.outputs.CONFIG_FILE_EXISTS == 'true'
+        env:
+          STACK_OUTPUTS: ${{ steps.deploy_cfn.outputs.stack_outputs }}
+        run: |
+          # Extract EC2 instance ID from stack outputs
+          EC2_INSTANCE_ID=$(echo "$STACK_OUTPUTS" | jq -r '.[] | select(.OutputKey == "EC2InstanceId") | .OutputValue')
+          echo "EC2 Instance ID: $EC2_INSTANCE_ID"
+
+          # Example: Run a command to check the OS version
+          aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters '{"commands":["uname -a"]}' \
+            --output text \
+            --query "Command.CommandId"
+
+          # Example: Run a command to install Terraform
+          aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters '{"commands":["sudo yum update -y", "sudo yum install -y terraform"]}' \
+            --output text \
+            --query "Command.CommandId"
