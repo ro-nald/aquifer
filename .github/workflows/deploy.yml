@@ -3,14 +3,14 @@ name: Deploy CloudFormation Stack (SSM)
 on:
   push:
     branches:
-      - main  # Or your main branch name
+      - main # Or your main branch name
 
 jobs:
   deploy_base:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        environment: [dev, staging, prod]  # Define your environments
+        environment: [dev, staging, prod] # Define your environments
 
     steps:
       - name: Checkout code
@@ -54,9 +54,9 @@ jobs:
               ParameterKey=InstanceType,ParameterValue="${{ steps.load_env.outputs.instance_type }}"
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 
-        # Export outputs
-        aws cloudformation describe-stacks --stack-name acquifier-terraform-backend-${{ matrix.environment }} --query "Stacks[0].Outputs" --output json > outputs.json
-        echo "::set-output name=stack_outputs::$(cat outputs.json)"
+          # Export outputs
+          aws cloudformation describe-stacks --stack-name acquifier-terraform-backend-${{ matrix.environment }} --query "Stacks[0].Outputs" --output json > outputs.json
+          echo "::set-output name=stack_outputs::$(cat outputs.json)"
 
       - name: Execute commands on EC2 instance via SSM
         if: steps.load_env.outputs.CONFIG_FILE_EXISTS == 'true'
