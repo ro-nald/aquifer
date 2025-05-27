@@ -1,16 +1,21 @@
 name: Deploy CloudFormation Stack (SSM)
 
 on:
-  push:
-    branches:
-      - main # Or your main branch name
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
 
 jobs:
   deploy_base:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        environment: [dev, staging, prod] # Define your environments
+    environment: ${{ github.event.inputs.environment }}
 
     steps:
       - name: Checkout code
@@ -21,12 +26,12 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ steps.load_env.outputs.aws_region }}
+          aws-region: ${{ steps.load_env.outputs.region }}
 
       - name: Load environment variables
         id: load_env
         run: |
-          CONFIG_FILE="config/${{ matrix.environment }}.yml"
+          CONFIG_FILE="config/${{ github.event.inputs.environment }}.yml"
           echo "Loading configuration from $CONFIG_FILE"
           if [ -f "$CONFIG_FILE" ]; then
             echo "CONFIG_FILE_EXISTS=true" >> $GITHUB_OUTPUT
@@ -46,16 +51,16 @@ jobs:
         if: steps.load_env.outputs.CONFIG_FILE_EXISTS == 'true'
         run: |
           aws cloudformation deploy \
-            --stack-name acquifier-terraform-backend-${{ matrix.environment }} \
+            --stack-name acquifier-terraform-backend-${{ github.event.inputs.environment }} \
             --template-file cloudformation/base-infrastructure.yaml \
             --parameters \
               ParameterKey=ProjectName,ParameterValue=acquifier \
-              ParameterKey=Environment,ParameterValue=${{ matrix.environment }} \
+              ParameterKey=Environment,ParameterValue=${{ github.event.inputs.environment }} \
               ParameterKey=InstanceType,ParameterValue="${{ steps.load_env.outputs.instance_type }}"
             --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM
 
           # Export outputs
-          aws cloudformation describe-stacks --stack-name acquifier-terraform-backend-${{ matrix.environment }} --query "Stacks[0].Outputs" --output json > outputs.json
+          aws cloudformation describe-stacks --stack-name acquifier-terraform-backend-${{ github.event.inputs.environment }} --query "Stacks[0].Outputs" --output json > outputs.json
           echo "::set-output name=stack_outputs::$(cat outputs.json)"
 
       - name: Execute commands on EC2 instance via SSM
